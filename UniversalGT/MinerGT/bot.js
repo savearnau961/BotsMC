@@ -1,33 +1,20 @@
-const mineflayer = require('mineflayer');
-const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
-const blockFinderPlugin = require('mineflayer-blockfinder')(mineflayer);
-const { GoalBlock, GoalNear } = goals;
-const mcData = require('minecraft-data')('1.20.1');
-const mineflayerViewer = require('prismarine-viewer').mineflayer;
+const mineflayer = require('mineflayer')
+const { pathfinder, Movements, goals: { GoalBlock } } = require('mineflayer-pathfinder')
+const collectBlock = require('mineflayer-collectblock').plugin
+const toolPlugin = require('mineflayer-tool').plugin
+const { mineflayer: viewer } = require('prismarine-viewer')
 
-const botName = process.argv[2] || 'ResourceGT';
-const bot = mineflayer.createBot({ username: botName });
-
-bot.loadPlugin(pathfinder);
-blockFinderPlugin(bot);
-
-// ---------------- VARIABLES ----------------
-let basePosition = null;
-let miningQueue = [];
-let chestList = [];
-const MAX_CHESTS = 64;
-let actionLog = [];
-
-// Minerales vanilla + dripstone
+// ---------------------------
+// Minerales y bloques
+// ---------------------------
 const vanillaOres = [
   "minecraft:coal_ore","minecraft:diamond_ore","minecraft:emerald_ore",
   "minecraft:gold_ore","minecraft:iron_ore","minecraft:lapis_ore",
   "minecraft:nether_quartz_ore","minecraft:redstone_ore",
   "minecraft:amethyst_block","minecraft:budding_amethyst",
   "minecraft:pointed_dripstone","minecraft:dripstone_block"
-];
+]
 
-// Minerales GregTech CEu Modern
 const gregTechOres = [
   "gregtech:ore_almandine","gregtech:ore_aluminium","gregtech:ore_amethyst",
   "gregtech:ore_apatite","gregtech:ore_banded_iron","gregtech:ore_barite",
@@ -63,9 +50,8 @@ const gregTechOres = [
   "gregtech:ore_uraninite","gregtech:ore_uranium_235","gregtech:ore_uranium_238",
   "gregtech:ore_vanadium_magnetite","gregtech:ore_vinteum","gregtech:ore_wulfenite",
   "gregtech:ore_yellow_garnet","gregtech:ore_yellow_limonite","gregtech:ore_zinc"
-];
+]
 
-// Bloques recolectables
 const explorerBlocks = [
   "minecraft:oak_log","minecraft:birch_log","minecraft:spruce_log","minecraft:jungle_log",
   "minecraft:stone","minecraft:granite","minecraft:diorite","minecraft:andesite",
@@ -75,195 +61,229 @@ const explorerBlocks = [
   "minecraft:orange_tulip","minecraft:white_tulip","minecraft:pink_tulip","minecraft:oxeye_daisy",
   "minecraft:sunflower","minecraft:sugar_cane","minecraft:bamboo","minecraft:leather","minecraft:coal",
   "minecraft:pointed_dripstone","minecraft:dripstone_block"
-];
-const foodBlocks = ["minecraft:wheat_seeds","minecraft:carrot","minecraft:potato","minecraft:beetroot","minecraft:apple"];
-const edibleAnimals = ["pig","sheep","chicken","cow"];
+]
 
-// ---------------- COMANDOS ----------------
-bot.on('chat', async (username, message) => {
-  if(message.startsWith('!setbase')) {
-    basePosition = bot.entity.position.clone();
-    bot.chat(`Base establecida en ${basePosition.x}, ${basePosition.y}, ${basePosition.z}`);
-    logAction(`Base establecida en ${basePosition.x},${basePosition.y},${basePosition.z}`);
-  }
+// Todos los minerales combinados
+const ALL_ORES = [...vanillaOres, ...gregTechOres]
 
-  if(message.startsWith('!delbase')) {
-    basePosition=null;
-    bot.chat("Base eliminada correctamente.");
-    logAction("Base eliminada");
-  }
+// ---------------------------
+// Configuración general
+// ---------------------------
+const SEARCH_RADIUS = 64
+const MAX_CHESTS = 2
+const VIEWER_PORT = 3000
+const ANTI_AFK_INTERVAL = 30000
+const CHAT_MESSAGES = ['minando', 'afk', 'activo']
 
-  if(message.startsWith('!setcofre')) {
-    const args = message.split(' ').slice(1);
-    const x = parseInt(args[0]), y = parseInt(args[1]), z = parseInt(args[2]);
-    const block = bot.blockAt({x,y,z});
-    let type=null;
-    if(block.name==='chest') type=block.getProperties && block.getProperties().chestType ? 'double_chest':'chest';
-    else if(block.name==='barrel') type='barrel';
-    chestList.push({x,y,z,type});
-    bot.chat(`Contenedor agregado en ${x},${y},${z} como ${type}`);
-    logAction(`Cofre registrado en ${x},${y},${z} tipo: ${type}`);
-  }
+// Guardar inventario temporal (opción 1)
+let savedInventory = []
 
-  if(message.startsWith('!minar')) {
-    const mat = message.split(' ')[1];
-    miningQueue.push(mat);
-    bot.chat(`Agregado ${mat} a la cola de minería`);
-    logAction(`Minar: ${mat}`);
-    mineQueueHandler();
-  }
+// ---------------------------
+// Crear bot y reconectar
+// ---------------------------
+function createBot() {
+  const bot = mineflayer.createBot({
+    host: 'localhost',
+    port: 25565,
+    username: 'MinerGT'
+  })
 
-  if(message.startsWith('!recolectar')) {
-    bot.chat("Exploración iniciada...");
-    logAction("Exploración iniciada");
-    exploreAndGather();
-  }
-
-  if(message.startsWith('!ven')) {
-    const player = bot.players[username];
-    const targetPos = player.entity.position;
-    bot.chat(`Viniendo hacia ti, ${username}...`);
-    logAction(`Moviéndose hacia ${username}`);
-    const moves = new Movements(bot, mcData);
-    bot.pathfinder.setMovements(moves);
-    await bot.pathfinder.goto(new GoalNear(targetPos.x,targetPos.y,targetPos.z,1));
-  }
-
-  if(message.startsWith('!ataquear')) {
-    const mobName = message.split(' ')[1];
-    const target = bot.nearestEntity(e=>e.name===mobName);
-    if(!target) return bot.chat(`No encontré ${mobName}`);
-    logAction(`Atacando ${mobName}`);
-    const moves = new Movements(bot, mcData);
-    bot.pathfinder.setMovements(moves);
-    await bot.pathfinder.goto(new GoalNear(target.position.x,target.position.y,target.position.z,1));
-    await bot.attack(target);
-    logAction(`${mobName} atacado`);
-  }
-
-  if(message.startsWith('!verperspectiva')) {
-    const port = parseInt(message.split(' ')[1]) || 3000;
-    mineflayerViewer(bot, { port, firstPerson: true, showChest: true });
-    bot.chat(`Perspectiva activa en http://localhost:${port}`);
-    logAction(`Perspectiva activa en puerto ${port}`);
-  }
-
-  if(message.startsWith('!inventario')) {
-    mostrarInventario();
-  }
-});
-
-// ---------------- FUNCIONES AUXILIARES ----------------
-function logAction(msg){
-  console.log(`[Acción] ${msg}`);
-  actionLog.push(msg);
-  if(actionLog.length>50) actionLog.shift();
+  setupBot(bot)
 }
 
-function mostrarInventario() {
-  const items = bot.inventory.items();
-  if(items.length===0){
-    bot.chat("Inventario vacío");
-    logAction("Inventario vacío");
-    return;
-  }
-  bot.chat("Inventario actual:");
-  logAction("Inventario actual:");
-  console.table(items.map(item=>{
-    const slot = item.slot;
-    const row = Math.floor(slot/9)+1;
-    return {nombre:item.name, cantidad:item.count, slot, fila:row};
-  }));
+function setupBot(bot) {
+  bot.loadPlugin(pathfinder)
+  bot.loadPlugin(collectBlock)
+  bot.loadPlugin(toolPlugin)
+
+  let mcData
+  let defaultMove
+
+  bot.once('spawn', async () => {
+    console.log('✅ Bot conectado')
+    mcData = require('minecraft-data')(bot.version)
+    defaultMove = new Movements(bot, mcData)
+    bot.pathfinder.setMovements(defaultMove)
+
+    // Viewer web
+    viewer(bot, { port: VIEWER_PORT })
+
+    // Restaurar inventario si hay datos (opción 1)
+    await restoreInventory(bot)
+
+    // Iniciar minería
+    mineLoop(bot)
+    // Iniciar anti-AFK
+    antiAFK(bot)
+  })
+
+  bot.on('end', () => {
+    console.log('🔄 Bot desconectado, guardando inventario y reconectando...')
+    saveInventory(bot)
+    setTimeout(createBot, 5000)
+  })
+
+  bot.on('kicked', reason => console.log('🚫 Kickeado:', reason))
+  bot.on('error', err => console.log('❌ Error:', err.message))
 }
 
-// ---------------- MINERÍA ----------------
-async function mineQueueHandler(){
-  while(miningQueue.length>0){
-    const mat=miningQueue.shift();
-    logAction(`Minando ${mat}`);
-    await mineQuantity([mat],3);
-    await returnToBase();
-  }
+// ---------------------------
+// Guardar / restaurar inventario (opción 1)
+// ---------------------------
+function saveInventory(bot) {
+  savedInventory = bot.inventory.items().map(item => ({
+    type: item.type,
+    count: item.count,
+    metadata: item.metadata
+  }))
+  console.log('💾 Inventario guardado')
 }
 
-async function mineQuantity(blockNames,quantity=1){
-  let mined=0;
-  while(mined<quantity){
-    const blockType=blockNames[Math.floor(Math.random()*blockNames.length)];
-    const minedChunk=await mineChunk(blockType,80); // 5 chunks
-    if(minedChunk) mined++; else await new Promise(r=>setTimeout(r,10000));
-  }
-}
-
-async function mineChunk(blockType,radius=80){
-  const blocks=bot.findBlocks({point:bot.entity.position,matching:b=>b.name===blockType,maxDistance:radius,count:100});
-  if(!blocks.length) return false;
-  for(const block of blocks){
-    const moves=new Movements(bot, mcData);
-    bot.pathfinder.setMovements(moves);
-    const goal=new GoalBlock(block.position.x,block.position.y,block.position.z);
-    bot.pathfinder.setGoal(goal);
-    await new Promise(resolve=>bot.once('goal_reached',async()=>{
-      try{await bot.dig(block);}catch{}
-      logAction(`Bloque ${blockType} minado en ${block.position.x},${block.position.y},${block.position.z}`);
-      resolve(true);
-    }));
-  }
-  return true;
-}
-
-async function returnToBase(){ 
-  logAction("Volviendo a base para depositar items"); 
-  await depositItems();
-}
-
-async function depositItems(){
-  for(const c of chestList){
-    const block=bot.blockAt(c);
-    if(!block) continue;
+async function restoreInventory(bot) {
+  if (!savedInventory || savedInventory.length === 0) return
+  for (const item of savedInventory) {
     try {
-      const chestObj=await bot.openContainer(block);
-      for(const item of bot.inventory.items()){
-        await chestObj.deposit(item.type,null,item.count);
-        logAction(`Deposité ${item.count} de ${item.name} en ${c.x},${c.y},${c.z}`);
+      if (bot.creative) {
+        await bot.give(item.type, item.count)
+      } else {
+        bot.chat(`/give ${bot.username} ${item.type} ${item.count}`)
       }
-      chestObj.close();
-    } catch {}
+    } catch(err) {
+      console.log('⚠️ No se pudo restaurar item:', item, err.message)
+    }
   }
+  console.log('🔄 Inventario restaurado')
 }
 
-// ---------------- EXPLORACIÓN ----------------
-async function exploreAndGather(){
-  while(true){
-    try{
-      const block = bot.findBlock({matching:b=>explorerBlocks.includes(b.name)||foodBlocks.includes(b.name),maxDistance:16});
-      if(block){
-        logAction(`Recolectando bloque ${block.name}`);
-        const moves = new Movements(bot, mcData);
-        bot.pathfinder.setMovements(moves);
-        await bot.pathfinder.goto(new GoalNear(block.position.x,block.position.y,block.position.z,1));
-        if(block.type!==0) await bot.dig(block);
+// ---------------------------
+// Anti-AFK
+// ---------------------------
+function antiAFK(bot) {
+  setInterval(() => {
+    if (!bot.entity) return
+    bot.setControlState('jump', true)
+    setTimeout(() => bot.setControlState('jump', false), 500)
+    bot.setControlState('forward', true)
+    setTimeout(() => bot.setControlState('forward', false), 1000)
+    const yaw = Math.random() * Math.PI * 2
+    const pitch = (Math.random() - 0.5) * 0.5
+    bot.look(yaw, pitch, true)
+    if (Math.random() < 0.3) {
+      const msg = CHAT_MESSAGES[Math.floor(Math.random() * CHAT_MESSAGES.length)]
+      bot.chat(msg)
+    }
+  }, ANTI_AFK_INTERVAL)
+}
+
+// ---------------------------
+// Minería principal
+// ---------------------------
+async function mineLoop(bot) {
+  while (true) {
+    try {
+      const target = findNearestOre(bot)
+      if (!target) {
+        console.log('🔍 No se encontraron minerales, explorando...')
+        await randomWalk(bot)
+        continue
       }
-      const target=bot.nearestEntity(e=>edibleAnimals.includes(e.name) && e.position.distanceTo(bot.entity.position)<10);
-      if(target){
-        logAction(`Cazando ${target.name}`);
-        const moves = new Movements(bot, mcData);
-        bot.pathfinder.setMovements(moves);
-        await bot.pathfinder.goto(new GoalNear(target.position.x,target.position.y,target.position.z,1));
-        await bot.attack(target);
-        logAction(`${target.name} atacado`);
+      console.log(`⛏️ Minando en ${target.position}`)
+      await bot.pathfinder.goto(new GoalBlock(target.position.x, target.position.y, target.position.z))
+      await bot.tool.equipForBlock(target)
+      await bot.dig(target)
+      logInventory(bot)
+
+      if (isInventoryFull(bot)) {
+        console.log('📦 Inventario lleno, depositando en cofre (opción 2)...')
+        await depositItems(bot)
       }
-    }catch(err){
-      logAction(`Error exploración: ${err.message}`);
-      await new Promise(r=>setTimeout(r,5000));
+    } catch(err) {
+      console.log('⚠️ Error en minería:', err.message)
     }
   }
 }
 
-// ---------------- INICIO ----------------
-bot.once('spawn',()=>{ 
-  bot.chat(`${botName} listo. Comandos: !setbase, !delbase, !setcofre, !minar, !recolectar, !ven, !ataquear <mob>, !verperspectiva [puerto], !inventario`);
-});
+// ---------------------------
+// Buscar minerales
+// ---------------------------
+function findNearestOre(bot) {
+  const blocks = bot.findBlocks({
+    matching: block => ALL_ORES.includes(block.name),
+    maxDistance: SEARCH_RADIUS,
+    count: 50
+  })
+  if (blocks.length === 0) return null
+  return bot.blockAt(blocks[0])
+}
+
+// ---------------------------
+// Exploración
+// ---------------------------
+async function randomWalk(bot) {
+  const pos = bot.entity.position
+  const x = pos.x + (Math.random() * 40 - 20)
+  const z = pos.z + (Math.random() * 40 - 20)
+  const y = pos.y
+  await bot.pathfinder.goto(new GoalBlock(x, y, z))
+}
+
+// ---------------------------
+// Inventario
+// ---------------------------
+function isInventoryFull(bot) {
+  return bot.inventory.emptySlotCount() === 0
+}
+
+function logInventory(bot) {
+  const items = bot.inventory.items()
+  console.log('\n📊 Inventario:')
+  console.table(items.map(i => ({
+    nombre: i.name,
+    cantidad: i.count,
+    slot: i.slot,
+    fila: Math.floor(i.slot / 9)
+  })))
+}
+
+// ---------------------------
+// Cofres (opción 2)
+// ---------------------------
+async function depositItems(bot) {
+  const chestBlock = bot.findBlock({
+    matching: block => block.name.includes('chest'),
+    maxDistance: 10
+  })
+  if (!chestBlock) {
+    console.log('❌ No hay cofres cerca')
+    return
+  }
+  await bot.pathfinder.goto(new GoalBlock(chestBlock.position.x, chestBlock.position.y, chestBlock.position.z))
+  const chest = await bot.openChest(chestBlock)
+  for (const item of bot.inventory.items()) {
+    try {
+      await chest.deposit(item.type, null, item.count)
+    } catch(err) {}
+  }
+  chest.close()
+  console.log('✅ Items depositados en cofre')
+}
+
+// ---------------------------
+// Seguridad básica
+// ---------------------------
+function avoidDanger(bot) {
+  const blockBelow = bot.blockAt(bot.entity.position.offset(0, -1, 0))
+  if (blockBelow && blockBelow.name.includes('lava')) {
+    console.log('🔥 Lava detectada, moviéndose...')
+    bot.setControlState('back', true)
+    setTimeout(() => bot.setControlState('back', false), 1000)
+  }
+}
+
+// ---------------------------
+// Iniciar bot
+// ---------------------------
+createBot()
 
 // Anti-AFK
 bot.on('error', err=>logAction(`Error: ${err.message}`));
