@@ -2,7 +2,8 @@
 title Mineflayer Bot Manager
 
 :: Ruta del bot JS
-set BOT_FILE=miner_full_allores.js
+set BOT_FILE=bot.js
+set INV_BAT=inv_bot.bat
 
 :: Variables de control
 set /a RUNNING=0
@@ -46,9 +47,8 @@ if %RUNNING%==0 (
     pause
     goto MENU
 )
-:: Esto enviará un comando al bot para vaciar inventario
 echo Enviando comando de vaciado de inventario...
-:: Se puede mejorar con un socket o archivo temporal de comandos
+:: Para vaciar inventario, el bot debe leer un archivo de comandos (bot_commands.txt)
 echo clearinv > bot_commands.txt
 pause
 goto MENU
@@ -59,7 +59,6 @@ if %RUNNING%==0 (
     pause
     goto MENU
 )
-:: Matar el proceso de node correspondiente al bot
 tasklist /FI "IMAGENAME eq node.exe" | find /I "%BOT_FILE%" >nul
 if %ERRORLEVEL%==0 (
     taskkill /F /IM node.exe
@@ -77,6 +76,5 @@ if %RUNNING%==0 (
     pause
     goto MENU
 )
-:: Abrir nueva terminal para mostrar inventario
-start "Inventario Bot" cmd /k "node view_inventory.js"
+start "Inventario Bot" cmd /k "%INV_BAT%"
 goto MENU
