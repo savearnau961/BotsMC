@@ -53,29 +53,14 @@ const gregTechOres = [
   "gregtech:ore_yellow_garnet","gregtech:ore_yellow_limonite","gregtech:ore_zinc"
 ]
 
-const explorerBlocks = [
-  "minecraft:oak_log","minecraft:birch_log","minecraft:spruce_log","minecraft:jungle_log",
-  "minecraft:stone","minecraft:granite","minecraft:diorite","minecraft:andesite",
-  "minecraft:cobblestone","minecraft:dirt","minecraft:grass_block","minecraft:sand",
-  "minecraft:red_sand","minecraft:gravel","minecraft:dandelion","minecraft:poppy",
-  "minecraft:blue_orchid","minecraft:allium","minecraft:azure_bluet","minecraft:red_tulip",
-  "minecraft:orange_tulip","minecraft:white_tulip","minecraft:pink_tulip","minecraft:oxeye_daisy",
-  "minecraft:sunflower","minecraft:sugar_cane","minecraft:bamboo","minecraft:leather","minecraft:coal",
-  "minecraft:pointed_dripstone","minecraft:dripstone_block"
-]
-
-// Combinar todos los ores
 const ALL_ORES = [...vanillaOres, ...gregTechOres]
 
 // ---------------------------
 // Config general
 // ---------------------------
 const SEARCH_RADIUS = 64
-const MAX_CHESTS = 2
 const VIEWER_PORT = 3000
 const ANTI_AFK_INTERVAL = 30000
-const CHAT_MESSAGES = ['minando', 'afk', 'activo']
-
 let savedInventory = []
 
 // ---------------------------
@@ -126,7 +111,7 @@ function setupBot(bot) {
 }
 
 // ---------------------------
-// Inventario (opción 1)
+// Inventario
 function saveInventory(bot) {
   savedInventory = bot.inventory.items().map(item => ({
     type: item.type,
@@ -166,35 +151,23 @@ function antiAFK(bot) {
     const yaw = Math.random() * Math.PI * 2
     const pitch = (Math.random() - 0.5) * 0.5
     bot.look(yaw, pitch, true)
-    if (Math.random() < 0.3) {
-      const msg = CHAT_MESSAGES[Math.floor(Math.random() * CHAT_MESSAGES.length)]
-      bot.chat(msg)
-    }
   }, ANTI_AFK_INTERVAL)
 }
 
 // ---------------------------
-// Minería principal
+// Minería principal con prioridad
 async function mineLoop(bot) {
   while(true) {
     try {
-      const target = findNearestOre(bot)
+      const target = findBestOre(bot)
       if(!target) {
-        console.log('🔍 No se encontraron minerales, explorando...')
         await randomWalk(bot)
         continue
       }
-      console.log(`⛏️ Minando en ${target.position}`)
       await bot.pathfinder.goto(new GoalBlock(target.position.x, target.position.y, target.position.z))
       await bot.tool.equipForBlock(target)
       await bot.dig(target)
       logInventory(bot)
-
-      if(isInventoryFull(bot)) {
-        console.log('📦 Inventario lleno, depositando en cofre (opción 2)...')
-        await depositItems(bot)
-      }
-
     } catch(err) {
       console.log('⚠️ Error en minería:', err.message)
     }
@@ -202,15 +175,36 @@ async function mineLoop(bot) {
 }
 
 // ---------------------------
-// Buscar minerales
-function findNearestOre(bot) {
+// Prioridad por tamaño de veta y herramienta
+function findBestOre(bot) {
+  // Encontrar todos los bloques de ores dentro del radio
   const blocks = bot.findBlocks({
-    matching: block => ALL_ORES.includes(block.name),
+    matching: b => ALL_ORES.includes(b.name) && bot.canDigBlock(b),
     maxDistance: SEARCH_RADIUS,
-    count: 50
-  })
-  if(blocks.length===0) return null
-  return bot.blockAt(blocks[0])
+    count: 100
+  }).map(pos => bot.blockAt(pos))
+
+  if(blocks.length === 0) return null
+
+  // Agrupar por tipo para estimar tamaño de veta
+  const oreGroups = {}
+  for(const b of blocks) {
+    oreGroups[b.name] = oreGroups[b.name] || []
+    oreGroups[b.name].push(b)
+  }
+
+  // Ordenar primero por cantidad de bloques (veta más grande) luego por dificultad de minado
+  const sortedGroups = Object.entries(oreGroups)
+    .sort((a,b) => b[1].length - a[1].length) // tamaño de veta descendente
+    .map(g => g[1])
+    .flat()
+
+  // Filtrar por herramienta capaz
+  for(const b of sortedGroups) {
+    if(bot.canDigBlock(b)) return b
+  }
+
+  return null
 }
 
 // ---------------------------
@@ -225,10 +219,6 @@ async function randomWalk(bot) {
 
 // ---------------------------
 // Inventario
-function isInventoryFull(bot) {
-  return bot.inventory.emptySlotCount()===0
-}
-
 function logInventory(bot) {
   const items = bot.inventory.items()
   console.clear()
@@ -243,43 +233,5 @@ function logInventory(bot) {
 }
 
 // ---------------------------
-// Cofres (opción 2)
-async function depositItems(bot) {
-  const chestBlock = bot.findBlock({
-    matching: block => block.name.includes('chest'),
-    maxDistance: 10
-  })
-  if(!chestBlock) {
-    console.log('❌ No hay cofres cerca')
-    return
-  }
-  await bot.pathfinder.goto(new GoalBlock(chestBlock.position.x,chestBlock.position.y,chestBlock.position.z))
-  const chest = await bot.openChest(chestBlock)
-  for(const item of bot.inventory.items()) {
-    try {
-      await chest.deposit(item.type,null,item.count)
-    } catch(err) {}
-  }
-  chest.close()
-  console.log('✅ Items depositados en cofre')
-}
-
-// ---------------------------
-// Seguridad básica
-function avoidDanger(bot) {
-  const blockBelow = bot.blockAt(bot.entity.position.offset(0,-1,0))
-  if(blockBelow && blockBelow.name.includes('lava')) {
-    console.log('🔥 Lava detectada, moviéndose...')
-    bot.setControlState('back',true)
-    setTimeout(()=>bot.setControlState('back',false),1000)
-  }
-}
-
-// ---------------------------
 // Iniciar bot
 createBot()
-
-// Anti-AFK
-bot.on('error', err=>logAction(`Error: ${err.message}`));
-bot.on('end', ()=>logAction('Conexión cerrada'));
-setInterval(()=>{if(bot.entity) bot.look(bot.entity.yaw,bot.entity.pitch,true);},60000);
