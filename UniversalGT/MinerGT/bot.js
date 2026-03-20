@@ -3,6 +3,7 @@ const { pathfinder, Movements, goals: { GoalBlock } } = require('mineflayer-path
 const collectBlock = require('mineflayer-collectblock').plugin
 const toolPlugin = require('mineflayer-tool').plugin
 const { mineflayer: viewer } = require('prismarine-viewer')
+const fs = require('fs')
 
 // ---------------------------
 // Minerales y bloques
@@ -63,11 +64,11 @@ const explorerBlocks = [
   "minecraft:pointed_dripstone","minecraft:dripstone_block"
 ]
 
-// Todos los minerales combinados
+// Combinar todos los ores
 const ALL_ORES = [...vanillaOres, ...gregTechOres]
 
 // ---------------------------
-// Configuración general
+// Config general
 // ---------------------------
 const SEARCH_RADIUS = 64
 const MAX_CHESTS = 2
@@ -75,7 +76,6 @@ const VIEWER_PORT = 3000
 const ANTI_AFK_INTERVAL = 30000
 const CHAT_MESSAGES = ['minando', 'afk', 'activo']
 
-// Guardar inventario temporal (opción 1)
 let savedInventory = []
 
 // ---------------------------
@@ -87,7 +87,6 @@ function createBot() {
     port: 25565,
     username: 'MinerGT'
   })
-
   setupBot(bot)
 }
 
@@ -108,12 +107,11 @@ function setupBot(bot) {
     // Viewer web
     viewer(bot, { port: VIEWER_PORT })
 
-    // Restaurar inventario si hay datos (opción 1)
+    // Restaurar inventario
     await restoreInventory(bot)
 
-    // Iniciar minería
+    // Iniciar minería y antiAFK
     mineLoop(bot)
-    // Iniciar anti-AFK
     antiAFK(bot)
   })
 
@@ -128,14 +126,14 @@ function setupBot(bot) {
 }
 
 // ---------------------------
-// Guardar / restaurar inventario (opción 1)
-// ---------------------------
+// Inventario (opción 1)
 function saveInventory(bot) {
   savedInventory = bot.inventory.items().map(item => ({
     type: item.type,
     count: item.count,
     metadata: item.metadata
   }))
+  writeInventoryFile(bot)
   console.log('💾 Inventario guardado')
 }
 
@@ -143,11 +141,8 @@ async function restoreInventory(bot) {
   if (!savedInventory || savedInventory.length === 0) return
   for (const item of savedInventory) {
     try {
-      if (bot.creative) {
-        await bot.give(item.type, item.count)
-      } else {
-        bot.chat(`/give ${bot.username} ${item.type} ${item.count}`)
-      }
+      if (bot.creative) await bot.give(item.type, item.count)
+      else bot.chat(`/give ${bot.username} ${item.type} ${item.count}`)
     } catch(err) {
       console.log('⚠️ No se pudo restaurar item:', item, err.message)
     }
@@ -155,9 +150,12 @@ async function restoreInventory(bot) {
   console.log('🔄 Inventario restaurado')
 }
 
+function writeInventoryFile(bot) {
+  fs.writeFileSync('inventory.json', JSON.stringify(bot.inventory.items()), 'utf-8')
+}
+
 // ---------------------------
 // Anti-AFK
-// ---------------------------
 function antiAFK(bot) {
   setInterval(() => {
     if (!bot.entity) return
@@ -177,12 +175,11 @@ function antiAFK(bot) {
 
 // ---------------------------
 // Minería principal
-// ---------------------------
 async function mineLoop(bot) {
-  while (true) {
+  while(true) {
     try {
       const target = findNearestOre(bot)
-      if (!target) {
+      if(!target) {
         console.log('🔍 No se encontraron minerales, explorando...')
         await randomWalk(bot)
         continue
@@ -193,10 +190,11 @@ async function mineLoop(bot) {
       await bot.dig(target)
       logInventory(bot)
 
-      if (isInventoryFull(bot)) {
+      if(isInventoryFull(bot)) {
         console.log('📦 Inventario lleno, depositando en cofre (opción 2)...')
         await depositItems(bot)
       }
+
     } catch(err) {
       console.log('⚠️ Error en minería:', err.message)
     }
@@ -205,63 +203,61 @@ async function mineLoop(bot) {
 
 // ---------------------------
 // Buscar minerales
-// ---------------------------
 function findNearestOre(bot) {
   const blocks = bot.findBlocks({
     matching: block => ALL_ORES.includes(block.name),
     maxDistance: SEARCH_RADIUS,
     count: 50
   })
-  if (blocks.length === 0) return null
+  if(blocks.length===0) return null
   return bot.blockAt(blocks[0])
 }
 
 // ---------------------------
 // Exploración
-// ---------------------------
 async function randomWalk(bot) {
   const pos = bot.entity.position
-  const x = pos.x + (Math.random() * 40 - 20)
-  const z = pos.z + (Math.random() * 40 - 20)
+  const x = pos.x + (Math.random()*40-20)
+  const z = pos.z + (Math.random()*40-20)
   const y = pos.y
-  await bot.pathfinder.goto(new GoalBlock(x, y, z))
+  await bot.pathfinder.goto(new GoalBlock(x,y,z))
 }
 
 // ---------------------------
 // Inventario
-// ---------------------------
 function isInventoryFull(bot) {
-  return bot.inventory.emptySlotCount() === 0
+  return bot.inventory.emptySlotCount()===0
 }
 
 function logInventory(bot) {
   const items = bot.inventory.items()
+  console.clear()
   console.log('\n📊 Inventario:')
-  console.table(items.map(i => ({
+  console.table(items.map(i=>({
     nombre: i.name,
     cantidad: i.count,
     slot: i.slot,
-    fila: Math.floor(i.slot / 9)
+    fila: Math.floor(i.slot/9)
   })))
+  writeInventoryFile(bot)
 }
 
 // ---------------------------
 // Cofres (opción 2)
-// ---------------------------
 async function depositItems(bot) {
   const chestBlock = bot.findBlock({
     matching: block => block.name.includes('chest'),
     maxDistance: 10
   })
-  if (!chestBlock) {
+  if(!chestBlock) {
     console.log('❌ No hay cofres cerca')
     return
   }
-  await bot.pathfinder.goto(new GoalBlock(chestBlock.position.x, chestBlock.position.y, chestBlock.position.z))
+  await bot.pathfinder.goto(new GoalBlock(chestBlock.position.x,chestBlock.position.y,chestBlock.position.z))
   const chest = await bot.openChest(chestBlock)
-  for (const item of bot.inventory.items()) {
+  for(const item of bot.inventory.items()) {
     try {
-      await chest.deposit(item.type, null, item.count)
+      await chest.deposit(item.type,null,item.count)
     } catch(err) {}
   }
   chest.close()
@@ -270,19 +266,17 @@ async function depositItems(bot) {
 
 // ---------------------------
 // Seguridad básica
-// ---------------------------
 function avoidDanger(bot) {
-  const blockBelow = bot.blockAt(bot.entity.position.offset(0, -1, 0))
-  if (blockBelow && blockBelow.name.includes('lava')) {
+  const blockBelow = bot.blockAt(bot.entity.position.offset(0,-1,0))
+  if(blockBelow && blockBelow.name.includes('lava')) {
     console.log('🔥 Lava detectada, moviéndose...')
-    bot.setControlState('back', true)
-    setTimeout(() => bot.setControlState('back', false), 1000)
+    bot.setControlState('back',true)
+    setTimeout(()=>bot.setControlState('back',false),1000)
   }
 }
 
 // ---------------------------
 // Iniciar bot
-// ---------------------------
 createBot()
 
 // Anti-AFK
